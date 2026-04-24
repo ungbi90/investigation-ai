@@ -556,7 +556,7 @@ let lastApiCall = 0;
 const API_MIN_INTERVAL = 5000; // 최소 5초 간격
 let ctx = []; // 맥락 큐 최대 6개
 
-const END_RE = /(했어요|했습니다|그랬어요|그랬습니다|맞습니다|아닙니다|없어요|모릅니다|겠습니다|이에요|거예요|입니다|같아요|같습니다)$/;
+const END_RE = /(했어요|했습니다|그랬어요|그랬습니다|맞습니다|아닙니다|없어요|모릅니다|겠습니다|이에요|거예요|입니다|같아요|같습니다|이에요|죠$|네요|데요|고요|군요|지요|세요|어요|아요)$/;
 
 // ── 초기화 ────────────────────────────────────────
 window.addEventListener('load', () => {
@@ -655,7 +655,7 @@ function onFinal(text) {
   addPending(id, text, time);
   buf.push({ id, text, time, ctx: [...ctx] });
   clearTimeout(bufTimer);
-  bufTimer = setTimeout(flush, END_RE.test(text) ? 500 : 2000);
+  bufTimer = setTimeout(flush, END_RE.test(text) ? 1000 : 4500);
 }
 
 function flush() {
@@ -764,7 +764,7 @@ function processQ() {
 
 async function runAI(item) {
   // Q 발화는 AI 요약 생략 (API 절약)
-  if (item.text.length < 8) {
+  if (item.text.length < 15) {
     fallback(item);
     return;
   }
