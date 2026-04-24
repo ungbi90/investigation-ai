@@ -552,6 +552,7 @@ let buf = [], bufTimer = null;
 let seq = 0;
 let transcripts = [], summaries = [];
 let aiQueue = [], aiBusy = false;
+let aBuf = []; // A 발화 누적 버퍼 (Q 등장 시 한번에 요약)
 let lastApiCall = 0;
 const API_MIN_INTERVAL = 5000; // 최소 5초 간격
 let ctx = []; // 맥락 큐 최대 6개
@@ -655,7 +656,7 @@ function onFinal(text) {
   addPending(id, text, time);
   buf.push({ id, text, time, ctx: [...ctx] });
   clearTimeout(bufTimer);
-  bufTimer = setTimeout(flush, END_RE.test(text) ? 1200 : 6000);
+  bufTimer = setTimeout(flush, END_RE.test(text) ? 1500 : 12000);
 }
 
 function flush() {
@@ -711,7 +712,7 @@ function stopRec() {
 function clearAll() {
   if (isRec) stopRec();
   transcripts = []; summaries = []; aiQueue = []; ctx = [];
-  buf = []; seq = 0; aiBusy = false;
+  buf = []; seq = 0; aiBusy = false; aBuf = [];
   clearTimeout(bufTimer);
   lastSpk = 'Q';
   const f = document.getElementById('feed');
@@ -794,6 +795,28 @@ ${ctxStr}
 
 현재 발화: "${item.text}"`;
 
+  // summaryOnly: A 발화 묶음 요약 (화자 판단 불필요)
+  if (item.summaryOnly) {
+    const sumPrompt = `다음은 진술자의 답변이다. 조서용으로 핵심 사실만 한 문장으로 요약하라.
+3인칭 과거형, "~진술함" 형식. JSON으로만 출력: {"statement":"요약문"}
+
+진술: "${item.text}"`;
+    const r2 = await callGemini(sumPrompt);
+    if (r2) {
+      const p2 = parseJSON(r2);
+      const stmt = p2?.statement || '';
+      if (stmt) {
+        summaries.push({ stmt, src: item.text });
+        const sd = document.createElement('div');
+        sd.className = 'card card-sum';
+        sd.innerHTML = `<div class="sum-tag">⚡ 핵심 팩트</div><div class="sum-text">${esc(stmt)}</div><div class="sum-src">원문: "${esc(item.text)}"</div>`;
+        addCard(sd);
+        scrollFeed();
+      }
+    }
+    return;
+  }
+
   const res = await callGemini(prompt);
   if (!res) { fallback(item); return; }
   const parsed = parseJSON(res);
@@ -834,13 +857,23 @@ function confirm(item, spk, isLow, stmt) {
   document.getElementById('expbtn2').disabled = false;
   scrollFeed();
 
-  if (spk === 'A' && stmt.trim()) {
-    summaries.push({ stmt, src: item.text });
-    addCard('card card-sum', `
-      <div class="sum-tag">⚡ 핵심 팩트</div>
-      <div class="sum-text">${esc(stmt)}</div>
-      <div class="sum-src">원문: "${esc(item.text)}"</div>`);
-    scrollFeed();
+  if (spk === 'A') {
+    // A 발화는 버퍼에 누적 - Q 등장 시 한번에 요약
+    aBuf.push(item.text);
+  } else if (spk === 'Q' && aBuf.length > 0) {
+    // Q 등장 → 직전 A 발화 전체를 묶어서 요약 요청
+    const merged = aBuf.join(' ');
+    aBuf = [];
+    if (merged.length >= 15) {
+      aiQueue.push({
+        ids: [],
+        text: merged,
+        time: item.time,
+        ctx: [...ctx],
+        summaryOnly: true
+      });
+      if (!aiBusy) processQ();
+    }
   }
 }
 
