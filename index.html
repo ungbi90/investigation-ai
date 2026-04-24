@@ -328,6 +328,7 @@ function addTranscript(text) {
   document.getElementById('expbtn').disabled = false;
   document.getElementById('expbtn2').disabled = false;
   document.getElementById('analyzebtn').disabled = false;
+  scrollFeed();
 }
 
 // ── 녹음 컨트롤 ───────────────────────────────────
@@ -400,7 +401,9 @@ async function analyze() {
   addToFeed(loadCard);
 
   // 전체 누적 진술 사용 (버퍼 비우지 않음)
-  const currentText = allTranscripts.map(t => t.text).join(' ');
+  // 진술이 너무 길면 최근 30개만 사용 (토큰 초과 방지)
+  const recentTranscripts = allTranscripts.slice(-30);
+  const currentText = recentTranscripts.map(t => t.text).join(' ');
   const historyStr = analysisHistory.length > 0
     ? '\n\n[이전 분석 맥락 - 모순 탐지용]\n' + analysisHistory.slice(-3).map((h,i) => `[분석${i+1}] ${h.summary}`).join('\n')
     : '';
@@ -421,7 +424,7 @@ ${historyStr}
 3. contradiction: 같은 진술 내에서 앞뒤가 맞지 않는 내용, 또는 이전 분석과 다른 내용 구체적으로 명시. 진술 전체를 꼼꼼히 검토하여 모순 찾기. 없으면 빈 문자열
 4. 절대로 \`\`\`json 이나 \`\`\` 사용하지 말 것`;
 
-  const res = await callGemini(prompt, 1024);
+  const res = await callGemini(prompt, 2048);
 
   // 로딩 카드 제거
   document.getElementById(loadId)?.remove();
@@ -477,6 +480,7 @@ ${historyStr}
   scrollFeed();
   btn.disabled = false;
   btn.textContent = '⚡ AI 분석';
+  scrollFeed();
 }
 
 // ── CLAUDE API ────────────────────────────────────
@@ -498,7 +502,7 @@ async function callGemini(prompt, maxTokens) {
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-6',
-          max_tokens: maxTokens || 1024,
+          max_tokens: maxTokens || 2048,
           messages: [{ role: 'user', content: prompt }]
         })
       });
