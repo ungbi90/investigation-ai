@@ -346,50 +346,51 @@ function initSpeech() {
 
   rec = new SR();
   rec.lang = 'ko-KR';
-  rec.continuous = true;
+  rec.continuous = false;     // ★ false로 변경: 누적 결과 문제 원천 차단
   rec.interimResults = true;
   rec.maxAlternatives = 1;
 
   rec.onresult = onResult;
-  rec.onerror = (e) => { if (e.error === 'no-speech') return; console.warn('STT:', e.error); };
+  rec.onerror = (e) => {
+    if (e.error === 'no-speech' || e.error === 'aborted') return;
+    console.warn('STT:', e.error);
+  };
   rec.onend = () => {
+    // continuous:false → 발화 하나가 끝나면 자동 종료됨
+    // shouldRun이면 즉시 재시작하여 연속 청취 유지
     if (shouldRun) {
-      globalIdx = 0; // 재시작 시 인덱스 리셋
-      setTimeout(() => { try { rec.start(); } catch(_){} }, 200);
+      setTimeout(() => { try { rec.start(); } catch(_){} }, 80);
     }
   };
 }
 
 function onResult(e) {
+  // continuous:false 모드: 매 세션에서 결과가 독립적으로 발행됨
+  // 이전 발화가 누적되는 문제 원천 차단
   let interim = '';
-  for (let i = e.resultIndex; i < e.results.length; i++) {
+  for (let i = 0; i < e.results.length; i++) {
     const r = e.results[i];
     if (r.isFinal) {
       const text = r[0].transcript.trim();
       if (!text) continue;
+      // 재시작 직후 동일 텍스트 중복 방지 (2초 내 동일 텍스트 무시)
       const now = Date.now();
-      // 3중 중복 차단
-      if (text === lastFinalTxt && (now - lastFinalTime) < 1500) continue;
-      if (i < globalIdx) continue;
+      if (text === lastFinalTxt && (now - lastFinalTime) < 2000) continue;
       lastFinalTxt = text;
       lastFinalTime = now;
-      globalIdx = i + 1;
 
       const spk = speaker;
       const time = new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
       const seq = ++tCount;
-      const entry = { id:`t${seq}`, seq, speaker:spk, text, time };
+      const entry = { id:'t'+seq, seq, speaker:spk, text, time };
 
-      // 전사 카드 즉시 표시
       addTranscriptCard(entry);
       transcripts.push(entry);
       if (spk === 'A') { aTranscripts.push(entry); aCount++; }
       document.getElementById('interim-txt').textContent = '';
-
-      // 발화 병합 버퍼
       bufferUtterance(entry);
     } else {
-      interim += r[0].transcript;
+      interim = r[0].transcript; // 마지막 interim만 표시
     }
   }
   if (interim) document.getElementById('interim-txt').textContent = interim + '…';
