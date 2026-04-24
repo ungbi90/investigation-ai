@@ -12,6 +12,7 @@
 <title>실시간 조서 어시스턴트</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/docx/8.5.0/docx.umd.min.js"></script>
 <style>
 :root{
   --bg:#0a0e14; --panel:#0f1520; --card:#141c2e; --elevated:#1a2440;
@@ -128,7 +129,17 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .btn-danger{background:rgba(255,76,94,.15);color:var(--red);border-color:rgba(255,76,94,.4);flex:1;}
 .btn-danger:hover:not(:disabled){background:rgba(255,76,94,.25);}
 .spk-wrap{display:flex;align-items:center;gap:4px;background:var(--card);border:1px solid var(--border-hi);border-radius:7px;padding:4px;flex:1;}
-.spk-btn{flex:1;padding:6px 8px;border-radius:5px;font-size:12px;font-weight:700;cursor:pointer;border:none;transition:.15s;background:transparent;color:var(--text3);letter-spacing:.3px;font-family:var(--font);}
+.spk-label-txt{font-size:11px;color:var(--text3);white-space:nowrap;font-family:var(--mono);}
+.spk-mode-wrap{display:flex;gap:5px;width:100%;}
+.spk-mode-btn{flex:1;padding:8px 10px;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;border:2px solid var(--border-hi);background:transparent;color:var(--text3);font-family:var(--font);transition:.2s;}
+.spk-mode-btn.active{border-color:var(--blue);color:var(--blue);background:rgba(45,123,244,.12);}
+.spk-manual-wrap{display:flex;gap:5px;width:100%;margin-top:4px;}
+.spk-auto-status{width:100%;text-align:center;padding:6px 0;font-size:13px;font-weight:700;margin-top:2px;}
+.auto-spk-q{color:var(--q);}
+.auto-spk-a{color:var(--a);}
+.spk-btn{flex:1;padding:10px 8px;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer;border:2px solid transparent;transition:.2s;background:transparent;color:var(--text3);font-family:var(--font);display:flex;align-items:center;justify-content:center;gap:6px;}
+.spk-ico{font-size:16px;}
+.spk-name{font-size:13px;font-weight:700;}
 .spk-btn.q-on{background:rgba(96,165,250,.2);color:var(--q);}
 .spk-btn.a-on{background:rgba(52,211,153,.2);color:var(--a);}
 
@@ -204,12 +215,27 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   <div id="ctrl">
     <div class="ctrl-row">
       <button class="btn btn-primary" id="start-btn" onclick="startRec()">● 조사 시작</button>
-      <button class="btn btn-danger" id="stop-btn" onclick="stopRec()" style="display:none">■ 조사 종료</button>
+      <button class="btn btn-danger" id="stop-btn" onclick="stopRec()" style="display:none">■ 조사 종료 및 보고서 생성</button>
     </div>
-    <div class="ctrl-row">
-      <div class="spk-wrap">
-        <button class="spk-btn q-on" id="spk-q" onclick="setSpeaker('Q')">Q 수사관</button>
-        <button class="spk-btn" id="spk-a" onclick="setSpeaker('A')">A 진술자</button>
+    <div class="ctrl-row" id="spk-row">
+      <div class="spk-mode-wrap">
+        <button class="spk-mode-btn mode-auto" id="mode-auto-btn" onclick="setAutoMode(true)">
+          ✦ 자동 화자 인식
+        </button>
+        <button class="spk-mode-btn mode-manual" id="mode-manual-btn" onclick="setAutoMode(false)">
+          ✎ 수동 전환
+        </button>
+      </div>
+      <div class="spk-manual-wrap" id="spk-manual-wrap" style="display:none">
+        <button class="spk-btn q-on" id="spk-q" onclick="setSpeaker('Q')">
+          <span class="spk-ico">👮</span><span class="spk-name">Q 수사관</span>
+        </button>
+        <button class="spk-btn" id="spk-a" onclick="setSpeaker('A')">
+          <span class="spk-ico">🧑</span><span class="spk-name">A 진술자</span>
+        </button>
+      </div>
+      <div class="spk-auto-status" id="spk-auto-status">
+        <span id="auto-cur-spk" class="auto-spk-q">👮 Q 수사관 발언 중</span>
       </div>
     </div>
   </div>
@@ -286,6 +312,14 @@ let lastFinalTxt = '';
 let lastFinalTime = 0;
 let globalIdx = 0;
 
+// 자동 화자 분리
+let autoSpeaker = true;          // 자동 모드 on/off
+let lastSpeaker = 'Q';           // 직전 확정 화자
+let lastSpeakerTime = 0;         // 직전 발화 종료 시각
+let contextQueue = [];           // AI 화자 판단용 맥락 큐 (최대 6개)
+let speakerClassQueue = [];      // 화자 분류 AI 호출 큐 (요약 큐와 독립)
+let speakerClassBusy = false;    // 화자 분류 큐 처리 중 여부
+
 // AI 큐
 let summaryQueue = [];
 let summaryBusy = false;
@@ -308,6 +342,7 @@ window.addEventListener('load', () => {
   const k = localStorage.getItem('joseo_api_key');
   if (k) { apiKey = k; showApp(); }
   initSpeech();
+  setAutoMode(true); // 기본값: 자동 화자 인식
 });
 
 function showApp() {
@@ -379,16 +414,29 @@ function onResult(e) {
       lastFinalTxt = text;
       lastFinalTime = now;
 
-      const spk = speaker;
       const time = new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
       const seq = ++tCount;
-      const entry = { id:'t'+seq, seq, speaker:spk, text, time };
-
-      addTranscriptCard(entry);
-      transcripts.push(entry);
-      if (spk === 'A') { aTranscripts.push(entry); aCount++; }
       document.getElementById('interim-txt').textContent = '';
-      bufferUtterance(entry);
+
+      if (autoSpeaker) {
+        // AI 화자 판단 모드: 플레이스홀더 카드 표시 후 AI 판단 큐에 추가
+        const pendingId = 'pending-' + seq;
+        addPendingCard(pendingId, text, time);
+        speakerClassQueue.push({ seq, text, time, pendingId, context: [...contextQueue] });
+        processSpeakerClassQueue();
+      } else {
+        // 수동 모드: 즉시 확정
+        const spk = speaker;
+        lastSpeaker = spk;
+        lastSpeakerTime = Date.now();
+        const entry = { id:'t'+seq, seq, speaker:spk, text, time };
+        addTranscriptCard(entry);
+        transcripts.push(entry);
+        if (spk === 'A') { aTranscripts.push(entry); aCount++; }
+        bufferUtterance(entry);
+        contextQueue.push({ speaker: spk, text });
+        if (contextQueue.length > 6) contextQueue.shift();
+      }
     } else {
       interim = r[0].transcript; // 마지막 interim만 표시
     }
@@ -430,17 +478,16 @@ function flushBuffer() {
   if (now - lastSummaryCall < MIN_CALL_INTERVAL) return;
   lastSummaryCall = now;
 
-  enqueueSummary({ text: merged, speaker: spk, refSeqs: buf.map(b=>b.seq) });
+  // 자동 모드에서는 화자 판단 시 이미 정제문 생성됨 → 별도 요약 큐 스킵
+  if (!autoSpeaker) {
+    enqueueSummary({ text: merged, speaker: spk, refSeqs: buf.map(b=>b.seq) });
+  }
 
-  // 주기적 분석 (A 발화 기준)
-  if (spk === 'A') {
-    if (aCount % 5 === 0) {
-      enqueueContra();
-      enqueueSuggest();
-    }
-    if (aCount % 10 === 0) {
-      enqueueTimeline();
-    }
+  // 주기적 분석은 confirmSpeakerCard에서 처리 (자동 모드)
+  // 수동 모드에서는 여기서 처리
+  if (!autoSpeaker && spk === 'A') {
+    if (aCount % 5 === 0) { enqueueContra(); enqueueSuggest(); }
+    if (aCount % 10 === 0) { enqueueTimeline(); }
   }
 }
 
@@ -479,16 +526,225 @@ function stopRec() {
   document.getElementById('stop-btn').style.display = 'none';
   document.getElementById('case-inp').disabled = false;
   document.getElementById('interim-txt').textContent = '';
-  // 종료 시 타임라인 최종 갱신
-  if (aTranscripts.length > 0) enqueueTimeline();
+  // 종료 시 타임라인 최종 갱신 후 docx 생성
+  if (aTranscripts.length > 0) {
+    enqueueTimeline();
+    // 타임라인 분석 완료 후 보고서 생성 (큐 처리 대기)
+    setTimeout(generateDocx, 4000);
+  } else {
+    generateDocx();
+  }
 }
 
+// ── 자동/수동 모드 전환 ──
+function setAutoMode(auto) {
+  autoSpeaker = auto;
+  document.getElementById('mode-auto-btn').className = 'spk-mode-btn mode-auto' + (auto?' active':'');
+  document.getElementById('mode-manual-btn').className = 'spk-mode-btn mode-manual' + (!auto?' active':'');
+  document.getElementById('spk-manual-wrap').style.display = auto ? 'none' : 'flex';
+  document.getElementById('spk-auto-status').style.display = auto ? 'block' : 'none';
+}
+
+// ── 수동 화자 전환 ──
 function setSpeaker(spk) {
-  // 화자 전환 시 버퍼 플러시
   if (speaker !== spk && uttBuffer.length > 0) flushBuffer();
   speaker = spk;
+  lastSpeaker = spk;
   document.getElementById('spk-q').className = 'spk-btn' + (spk==='Q'?' q-on':'');
   document.getElementById('spk-a').className = 'spk-btn' + (spk==='A'?' a-on':'');
+}
+
+// ── 플레이스홀더 카드 (AI 판단 대기 중) ──
+function addPendingCard(pendingId, text, time) {
+  const fw = document.getElementById('feed-wrap');
+  const emp = fw.querySelector('#feed-empty');
+  if (emp) emp.remove();
+  const d = document.createElement('div');
+  d.className = 'loading-card';
+  d.id = pendingId;
+  d.innerHTML = `
+    <div class="ld-tag"><div class="dots"><span></span><span></span><span></span></div>화자 판단 중</div>
+    <div style="font-size:12px;color:var(--text2);margin-top:4px;word-break:keep-all;">${esc(text)}</div>
+    <div style="font-size:10px;color:var(--text3);text-align:right;margin-top:2px;font-family:var(--mono);">${time}</div>`;
+  fw.appendChild(d);
+  fw.scrollTop = fw.scrollHeight;
+  document.getElementById('exp-btn').disabled = false;
+}
+
+// ── AI 화자 분류 큐 처리 ──
+async function processSpeakerClassQueue() {
+  if (speakerClassBusy || speakerClassQueue.length === 0) return;
+  speakerClassBusy = true;
+  const item = speakerClassQueue.shift();
+  try {
+    await runSpeakerClassify(item);
+  } catch(e) {
+    console.error('화자 분류 오류:', e);
+    // 오류 시 로컬 폴백
+    fallbackClassify(item);
+  }
+  speakerClassBusy = false;
+  processSpeakerClassQueue();
+}
+
+// ── AI 화자 분류 실행 ──
+async function runSpeakerClassify(item) {
+  // 맥락 문자열 생성
+  const ctxLines = item.context.map((c, i) => `[${i+1}] ${c.speaker}: ${c.text}`).join('\n');
+  const contextStr = ctxLines || '(없음 — 첫 번째 발화)';
+
+  const prompt = `당신은 수사관과 진술자의 대화 텍스트를 분석하여 화자를 분리하고, 진술자 발화에 대해서만 조서용 핵심 요약을 생성하는 수사 보조 시스템이다.
+
+입력은 항상 다음 두 부분으로 구성된다.
+1. 이전 대화 맥락
+2. 현재 새롭게 인식된 발화
+
+당신의 임무는 현재 발화가 수사관(Q)인지 진술자(A)인지 판단하고, 지정된 JSON 형식으로만 출력하는 것이다.
+
+[판단 우선순위]
+1. 현재 발화의 문장 구조를 먼저 판단한다.
+2. 단일 문장만으로 판단이 모호하면 직전 2~4개의 대화 맥락을 참조한다.
+3. 대화 흐름은 일반적으로 Q → A → Q → A 패턴을 따른다.
+4. 단, 패턴보다 문맥상 의미가 더 강하면 문장 내용과 역할을 우선한다.
+5. 수사관의 확인 질문처럼 보이는 짧은 문장도 문맥상 질문이면 Q로 분류한다.
+
+[Q 판정 기준]
+- 의문형 종결 어미: ~습니까, ~나요, ~죠, ~인가요, ~였습니까, ~했습니까
+- 육하원칙을 묻는 짧은 질문
+- 사실 확인, 재확인, 추궁, 정정 요구
+- 직전 진술의 내용을 되묻는 문장
+- 평서문 구조이더라도 확인 질문 의도이면 Q: "어제 술 마셨다고 했죠", "그럼 그때 피해자가 먼저 왔다는 말입니까"
+
+[A 판정 기준]
+- 자신의 행동·상태·감정·사건 경위를 설명하는 평서문
+- 질문에 대한 답변, 인정, 부인, 해명
+- ~했습니다, ~였어요, ~인 것 같아요 형태의 응답
+- 단답형: 네, 아니요, 맞습니다, 아닙니다, 모릅니다
+- 직전 발화가 Q일 때 나오는 모든 발화
+
+[오분류 방지]
+- 진술자가 "왜 그러세요?" 등으로 되묻더라도 직전이 Q이면 A 유지
+- 5자 이하 단발 발화는 직전 화자 흐름 우선
+- "네", "아니요", "맞습니다"는 직전이 Q이면 무조건 A
+- 반드시 Q 또는 A 중 하나로만 출력, 절대 설명 덧붙이지 않음
+
+[정제문 생성 규칙 — A 판정 시에만]
+1. 사건과 직접 관련된 핵심 사실만 한 줄로 요약
+2. 감정 호소, 반복, 무관한 설명 제거
+3. 3인칭 과거형, 종결: "~라고 진술함", "~했다고 진술함"
+4. 주어: "피의자는" 또는 "진술자는"
+5. 사건 무관 진술이면 skip: true, statement: ""
+
+[출력 형식 — 반드시 JSON만, 다른 텍스트 절대 금지]
+{"speaker":"Q또는A","confidence":"high또는medium또는low","statement":"정제문또는빈문자열","skip":false또는true}
+
+CONTEXT:
+${contextStr}
+
+CURRENT:
+${item.text}`;
+
+  const res = await callClaude(prompt, 200);
+  if (!res) { fallbackClassify(item); return; }
+
+  let parsed = safeJson(res);
+  if (!parsed || !parsed.speaker) { fallbackClassify(item); return; }
+
+  const spk = parsed.speaker === 'Q' ? 'Q' : 'A';
+  confirmSpeakerCard(item, spk, parsed);
+}
+
+// ── AI 판단 결과로 플레이스홀더 카드 교체 ──
+function confirmSpeakerCard(item, spk, parsed) {
+  const pendingEl = document.getElementById(item.pendingId);
+  if (!pendingEl) return;
+
+  const entry = { id: 't' + item.seq, seq: item.seq, speaker: spk, text: item.text, time: item.time };
+  transcripts.push(entry);
+
+  if (spk === 'A') {
+    aTranscripts.push(entry);
+    aCount++;
+  }
+  lastSpeaker = spk;
+  lastSpeakerTime = Date.now();
+  updateAutoSpeakerUI(spk);
+
+  // 맥락 큐 업데이트
+  contextQueue.push({ speaker: spk, text: item.text });
+  if (contextQueue.length > 6) contextQueue.shift();
+
+  // 플레이스홀더 → 확정 전사 카드로 교체
+  const d = document.createElement('div');
+  d.className = `card card-${spk.toLowerCase()}`;
+  d.id = entry.id;
+
+  // confidence가 low이면 카드에 불확실 표시
+  const confBadge = parsed.confidence === 'low'
+    ? '<span style="font-size:9px;background:rgba(245,200,66,.15);color:var(--yellow);padding:1px 5px;border-radius:3px;margin-left:5px;font-family:var(--mono);">추정</span>'
+    : '';
+
+  d.innerHTML = `
+    <div class="qa-meta">
+      <span class="qa-spk ${spk.toLowerCase()}">${spk === 'Q' ? 'Q 수사관' : 'A 진술자'}</span>
+      ${confBadge}
+      <span class="qa-time">${entry.time}</span>
+    </div>
+    <div class="qa-text">${esc(entry.text)}</div>`;
+  pendingEl.replaceWith(d);
+
+  const fw = document.getElementById('feed-wrap');
+  fw.scrollTop = fw.scrollHeight;
+
+  // A이고 정제문이 있으면 요약 카드도 생성
+  if (spk === 'A' && parsed.statement && !parsed.skip) {
+    setTimeout(() => addInlineSummaryCard(entry, parsed), 100);
+  }
+
+  bufferUtterance(entry);
+
+  // 주기적 분석
+  if (spk === 'A') {
+    if (aCount % 5 === 0) { enqueueContra(); enqueueSuggest(); }
+    if (aCount % 10 === 0) { enqueueTimeline(); }
+  }
+}
+
+// ── AI 실패 시 로컬 폴백 ──
+function fallbackClassify(item) {
+  // 간단한 로컬 규칙으로 폴백
+  const t = item.text.trim();
+  let spk = lastSpeaker;
+  if (/(입니까|습니까|인가요|나요|까요|맞죠|그렇죠)$/.test(t)) spk = 'Q';
+  else if (lastSpeaker === 'Q') spk = 'A';
+  const fakeResult = { speaker: spk, confidence: 'low', statement: '', skip: true };
+  confirmSpeakerCard(item, spk, fakeResult);
+}
+
+// ── 인라인 요약 카드 (화자 판단과 함께 즉시 표시) ──
+function addInlineSummaryCard(entry, parsed) {
+  const fw = document.getElementById('feed-wrap');
+  const d = document.createElement('div');
+  d.className = 'card card-fact';
+  d.innerHTML = `
+    <div class="fact-tag">⚡ 핵심 팩트</div>
+    <div class="fact-main">${esc(parsed.statement)}</div>
+    <div class="fact-src">원문: "${esc(entry.text)}"</div>`;
+  fw.appendChild(d);
+  fw.scrollTop = fw.scrollHeight;
+  allFacts.push({ statement: parsed.statement, source: entry.text, skip: false });
+}
+
+// ── 화자 확정 및 UI 업데이트 ──
+function updateAutoSpeakerUI(spk) {
+  const el = document.getElementById('auto-cur-spk');
+  if (spk === 'Q') {
+    el.className = 'auto-spk-q';
+    el.textContent = '👮 Q 수사관 발언 중';
+  } else {
+    el.className = 'auto-spk-a';
+    el.textContent = '🧑 A 진술자 발언 중';
+  }
 }
 
 function clearAll() {
@@ -496,6 +752,8 @@ function clearAll() {
   transcripts=[]; aTranscripts=[]; allFacts=[]; allContra=[]; contraIds=new Set(); timeline=[];
   tCount=0; aCount=0; summaryQueue=[]; summaryBusy=false;
   uttBuffer=[]; clearTimeout(uttTimer);
+  lastSpeaker='Q'; lastSpeakerTime=0; contextQueue=[]; speakerClassQueue=[]; speakerClassBusy=false;
+  updateAutoSpeakerUI('Q');
   const fw = document.getElementById('feed-wrap');
   fw.innerHTML = '';
   fw.appendChild(emptyEl());
@@ -856,6 +1114,178 @@ function copyExport() {
     btn.textContent = '복사됨 ✓';
     setTimeout(()=>{ btn.textContent='클립보드 복사'; }, 1800);
   }).catch(()=>alert('복사 실패 — 텍스트를 직접 선택해 주세요.'));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DOCX 보고서 생성
+// ═══════════════════════════════════════════════════════════════
+async function generateDocx() {
+  if (typeof docx === 'undefined') {
+    alert('docx 라이브러리 로딩 실패. 잠시 후 내보내기 버튼을 이용해 주세요.');
+    return;
+  }
+  if (transcripts.length === 0) return;
+
+  const { Document, Paragraph, TextRun, HeadingLevel, AlignmentType, BorderStyle, Table, TableRow, TableCell, WidthType, Packer } = docx;
+
+  const caseNo = document.getElementById('case-inp').value || '미입력';
+  const now = new Date().toLocaleString('ko-KR');
+  const qN = transcripts.filter(t=>t.speaker==='Q').length;
+  const aN = transcripts.filter(t=>t.speaker==='A').length;
+
+  const H = (text, level=1) => new Paragraph({
+    text, heading: level===1 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
+    spacing: { before: 240, after: 120 }
+  });
+
+  const P = (text, opts={}) => new Paragraph({
+    children: [new TextRun({ text, size: 22, font: '맑은 고딕', ...opts })],
+    spacing: { after: 80 }
+  });
+
+  const EMPTY = () => new Paragraph({ text: '', spacing: { after: 60 } });
+
+  const DIVIDER = () => new Paragraph({
+    border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: '2d7bf4' } },
+    spacing: { after: 160 }
+  });
+
+  // ── 표지 ──
+  const cover = [
+    EMPTY(), EMPTY(),
+    new Paragraph({
+      children: [new TextRun({ text: '조사 결과 요약 보고서', bold: true, size: 52, font: '맑은 고딕', color: '0a0e14' })],
+      alignment: AlignmentType.CENTER, spacing: { after: 200 }
+    }),
+    new Paragraph({
+      children: [new TextRun({ text: 'AI 실시간 수사 지원 시스템', size: 28, font: '맑은 고딕', color: '2d7bf4' })],
+      alignment: AlignmentType.CENTER, spacing: { after: 600 }
+    }),
+    new Paragraph({
+      children: [new TextRun({ text: `사건번호: ${caseNo}`, size: 24, font: '맑은 고딕' })],
+      alignment: AlignmentType.CENTER, spacing: { after: 120 }
+    }),
+    new Paragraph({
+      children: [new TextRun({ text: `조사일시: ${now}`, size: 24, font: '맑은 고딕' })],
+      alignment: AlignmentType.CENTER, spacing: { after: 120 }
+    }),
+    new Paragraph({
+      children: [new TextRun({ text: `발화현황: 수사관 ${qN}건 / 진술자 ${aN}건`, size: 24, font: '맑은 고딕' })],
+      alignment: AlignmentType.CENTER, spacing: { after: 400 }
+    }),
+    new Paragraph({
+      pageBreakBefore: true, text: ''
+    })
+  ];
+
+  // ── 1. AI 핵심 요약 ──
+  const factItems = allFacts.filter(f=>!f.skip && f.statement);
+  const factSection = [
+    H('1. AI 핵심 요약 — 조서 기재용'),
+    DIVIDER(),
+    ...(factItems.length > 0
+      ? factItems.map((f,i) => new Paragraph({
+          children: [
+            new TextRun({ text: `[${i+1}]  `, bold: true, size: 22, font: '맑은 고딕', color: '2d7bf4' }),
+            new TextRun({ text: f.statement, size: 22, font: '맑은 고딕' })
+          ],
+          spacing: { after: 100 }
+        }))
+      : [P('(해당 없음)')]
+    ),
+    EMPTY()
+  ];
+
+  // ── 2. 진술 모순 탐지 ──
+  const contraSection = [
+    H('2. 진술 모순 탐지 결과'),
+    DIVIDER(),
+    ...(allContra.length > 0
+      ? allContra.flatMap((c,i) => [
+          new Paragraph({
+            children: [new TextRun({ text: `[${i+1}] ${c.level==='high'?'● 명확한 모순':'○ 모순 가능성'}`, bold: true, size: 22, font: '맑은 고딕', color: c.level==='high'?'ff4c5e':'ff8c42' })],
+            spacing: { after: 60 }
+          }),
+          P(`이전 진술: ${c.prev}`),
+          P(`현재 진술: ${c.curr}`),
+          new Paragraph({
+            children: [new TextRun({ text: `→ ${c.note}`, size: 22, font: '맑은 고딕', color: 'ff4c5e', italics: true })],
+            spacing: { after: 160 }
+          })
+        ])
+      : [P('(탐지된 모순 없음)')]
+    ),
+    EMPTY()
+  ];
+
+  // ── 3. 사건 타임라인 ──
+  const tlSection = [
+    H('3. 사건 타임라인'),
+    DIVIDER(),
+    ...(timeline.length > 0
+      ? timeline.map(t => new Paragraph({
+          children: [
+            new TextRun({ text: `${t.time}  `, bold: true, size: 22, font: '맑은 고딕', color: '2d7bf4' }),
+            new TextRun({ text: `[${t.place}]  `, size: 22, font: '맑은 고딕', color: '4a5a7a' }),
+            new TextRun({ text: t.action + (t.confidence==='low'?' (추정)':''), size: 22, font: '맑은 고딕' })
+          ],
+          spacing: { after: 80 }
+        }))
+      : [P('(타임라인 정보 없음)')]
+    ),
+    EMPTY()
+  ];
+
+  // ── 4. 전체 전사 원문 ──
+  const rawSection = [
+    H('4. 전체 전사 원문'),
+    DIVIDER(),
+    ...transcripts.map(t => new Paragraph({
+      children: [
+        new TextRun({ text: `(${t.time}) `, size: 20, font: '맑은 고딕', color: '4a5a7a' }),
+        new TextRun({ text: `[${t.speaker === 'Q' ? 'Q 수사관' : 'A 진술자'}]  `, bold: true, size: 20, font: '맑은 고딕', color: t.speaker==='Q'?'2d7bf4':'00c9a7' }),
+        new TextRun({ text: t.text, size: 20, font: '맑은 고딕' })
+      ],
+      spacing: { after: 60 }
+    }))
+  ];
+
+  const doc = new Document({
+    creator: '조서AI',
+    title: `조사 결과 요약 보고서 — ${caseNo}`,
+    description: 'AI 실시간 수사 지원 시스템 생성 문서',
+    sections: [{
+      properties: {},
+      children: [
+        ...cover,
+        ...factSection,
+        ...contraSection,
+        ...tlSection,
+        ...rawSection
+      ]
+    }]
+  });
+
+  try {
+    const blob = await Packer.toBlob(doc);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const dateStr = new Date().toISOString().slice(0,10);
+    a.href = url;
+    a.download = `조사보고서_${caseNo}_${dateStr}.docx`;
+    a.click();
+    URL.revokeObjectURL(url);
+    // 성공 피드백 카드
+    const fw = document.getElementById('feed-wrap');
+    const d = document.createElement('div');
+    d.className = 'card card-fact';
+    d.innerHTML = '<div class="fact-tag">📄 보고서 생성 완료</div><div class="fact-main">조사 결과 요약 보고서(.docx)가 다운로드되었습니다.</div>';
+    fw.appendChild(d);
+    fw.scrollTop = fw.scrollHeight;
+  } catch(e) {
+    console.error('docx 생성 오류:', e);
+    alert('보고서 생성 중 오류가 발생했습니다. 내보내기 버튼을 이용해 주세요.');
+  }
 }
 </script>
 </body>
