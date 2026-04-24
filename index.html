@@ -647,7 +647,17 @@ function initSTT() {
   };
 
   rec.onerror = (e) => { if (e.error !== 'no-speech' && e.error !== 'aborted') console.warn(e.error); };
-  rec.onend = () => { if (running) setTimeout(() => { try { rec.start(); } catch(_){} }, 80); };
+  rec.onend = () => {
+    if (running) {
+      setTimeout(() => {
+        try { rec.start(); }
+        catch(e) {
+          // 재시작 실패 시 한 번 더 시도
+          setTimeout(() => { try { rec.start(); } catch(_){} }, 500);
+        }
+      }, 100);
+    }
+  };
 }
 
 function onFinal(text) {
@@ -759,7 +769,7 @@ function processQ() {
   runAI(item).finally(() => {
     aiBusy = false;
     // 4초 간격으로 다음 호출 - 분당 최대 15회 한도 초과 방지
-    setTimeout(processQ, 4000);
+    setTimeout(processQ, 6000);
   });
 }
 
@@ -806,12 +816,16 @@ ${ctxStr}
       const p2 = parseJSON(r2);
       const stmt = p2?.statement || '';
       if (stmt) {
-        summaries.push({ stmt, src: item.text });
-        const sd = document.createElement('div');
-        sd.className = 'card card-sum';
-        sd.innerHTML = `<div class="sum-tag">⚡ 핵심 팩트</div><div class="sum-text">${esc(stmt)}</div><div class="sum-src">원문: "${esc(item.text)}"</div>`;
-        addCard(sd);
-        scrollFeed();
+        // 직전 요약과 동일하면 중복 제거
+        const lastStmt = summaries.length > 0 ? summaries[summaries.length-1].stmt : '';
+        if (stmt !== lastStmt) {
+          summaries.push({ stmt, src: item.text });
+          const sd = document.createElement('div');
+          sd.className = 'card card-sum';
+          sd.innerHTML = `<div class="sum-tag">⚡ 핵심 팩트</div><div class="sum-text">${esc(stmt)}</div><div class="sum-src">원문: "${esc(item.text)}"</div>`;
+          addCard(sd);
+          scrollFeed();
+        }
       }
     }
     return;
