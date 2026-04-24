@@ -116,10 +116,10 @@ html,body{height:100%;overflow:hidden;background:#0a0e14;color:#e8edf5;font-fami
   <div class="s-badge">INVESTIGATION AI</div>
   <div class="s-title">실시간 조서 어시스턴트</div>
   <div class="s-desc">진술 전사 · 핵심 요약 · 추가 질문 제안 · 모순 탐지</div>
-  <input class="s-input" id="key-inp" type="password" placeholder="Gemini API 키 (AIza...)" autocomplete="off">
+  <input class="s-input" id="key-inp" type="password" placeholder="Anthropic API 키 (sk-ant-...)" autocomplete="off">
   <button class="s-btn" onclick="saveKey()">저장하고 시작하기</button>
-  <div class="s-note" style="color:#00e49a;font-size:11px;">✓ Gemini 2.5 Flash-Lite — 유료 결제 시 안정적 사용</div>
-  <div class="s-note">무료 키: <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com</a></div>
+  <div class="s-note" style="color:#00e49a;font-size:11px;">✓ Claude Sonnet 4.6 — 한국어 최고 성능</div>
+  <div class="s-note">API 키 발급: <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a></div>
   <div class="s-note">키는 이 기기에만 저장됩니다</div>
 </div>
 
@@ -199,11 +199,11 @@ html,body{height:100%;overflow:hidden;background:#0a0e14;color:#e8edf5;font-fami
       <button class="btn btn-ghost" onclick="closeSet()" style="padding:4px 10px;font-size:12px;">✕</button>
     </div>
     <div>
-      <div class="set-label">Gemini API 키</div>
-      <input class="s-input" id="set-key" type="password" placeholder="AIza..." autocomplete="off" style="width:100%;max-width:100%;">
+      <div class="set-label">Anthropic API 키</div>
+      <input class="s-input" id="set-key" type="password" placeholder="sk-ant-..." autocomplete="off" style="width:100%;max-width:100%;">
     </div>
     <div class="set-hint">
-      <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com</a>에서 발급<br>
+      <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>에서 발급<br>
       키는 브라우저에만 저장됩니다
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px;">
@@ -244,7 +244,7 @@ function showApp() {
 // ── API KEY ───────────────────────────────────────
 function saveKey() {
   const v = document.getElementById('key-inp').value.trim();
-  if (v.length < 10) { alert('올바른 Gemini API 키를 입력해 주세요.'); return; }
+  if (!v.startsWith('sk-')) { alert('올바른 Anthropic API 키를 입력해 주세요. (sk-ant-로 시작)'); return; }
   apiKey = v;
   ['joseo_api','joseo_key','joseo_api_key'].forEach(k => localStorage.setItem(k, v));
   showApp();
@@ -256,7 +256,7 @@ function openSet() {
 function closeSet() { document.getElementById('set-modal').classList.remove('open'); }
 function updateKey() {
   const v = document.getElementById('set-key').value.trim();
-  if (v.length < 10) { alert('올바른 키를 입력해 주세요.'); return; }
+  if (!v.startsWith('sk-')) { alert('올바른 Anthropic API 키를 입력해 주세요.'); return; }
   apiKey = v;
   ['joseo_api','joseo_key','joseo_api_key'].forEach(k => localStorage.setItem(k, v));
   closeSet();
@@ -484,7 +484,7 @@ ${historyStr}
   btn.textContent = '⚡ AI 분석';
 }
 
-// ── GEMINI API ────────────────────────────────────
+// ── CLAUDE API ────────────────────────────────────
 async function callGemini(prompt, maxTokens) {
   if (!apiKey) {
     setApi('err');
@@ -493,13 +493,18 @@ async function callGemini(prompt, maxTokens) {
   }
   for (let i = 0; i < 3; i++) {
     try {
-      const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=' + apiKey;
-      const r = await fetch(url, {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: maxTokens || 500, temperature: 0.1 }
+          model: 'claude-sonnet-4-6',
+          max_tokens: maxTokens || 500,
+          messages: [{ role: 'user', content: prompt }]
         })
       });
       if (r.status === 429) { await sleep(6000); continue; }
@@ -507,11 +512,11 @@ async function callGemini(prompt, maxTokens) {
         const e = await r.json().catch(()=>({}));
         const msg = e?.error?.message || ('HTTP ' + r.status);
         setApi('err');
-        addErrCard('Gemini 오류 [' + r.status + ']: ' + msg);
+        addErrCard('Claude 오류 [' + r.status + ']: ' + msg);
         return null;
       }
       const d = await r.json();
-      const t = d?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+      const t = d?.content?.[0]?.text?.trim() || '';
       if (!t) throw new Error('빈 응답');
       setApi('ok');
       return t;
@@ -543,7 +548,7 @@ function setApi(s) {
   const dot = document.getElementById('api-dot');
   const txt = document.getElementById('api-txt');
   dot.className = 'sdot' + (s==='ok'?' ok':s==='err'?' err':'');
-  txt.textContent = s==='ok'?'Gemini 연결됨':s==='err'?'API 오류':'API 대기';
+  txt.textContent = s==='ok'?'Claude 연결됨':s==='err'?'API 오류':'API 대기';
 }
 function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
