@@ -399,33 +399,29 @@ async function analyze() {
   loadCard.innerHTML = `<div class="c-label" style="color:#ff8c42;display:flex;align-items:center;gap:6px;"><div class="dots"><span></span><span></span><span></span></div>AI 분석 중...</div>`;
   addToFeed(loadCard);
 
-  const currentText = transcriptBuf.map(t => t.text).join(' ');
+  // 전체 누적 진술 사용 (버퍼 비우지 않음)
+  const currentText = allTranscripts.map(t => t.text).join(' ');
   const historyStr = analysisHistory.length > 0
-    ? '\n\n[이전 진술 맥락]\n' + analysisHistory.slice(-5).map(h => h.summary).join('\n')
+    ? '\n\n[이전 분석 맥락 - 모순 탐지용]\n' + analysisHistory.slice(-3).map((h,i) => `[분석${i+1}] ${h.summary}`).join('\n')
     : '';
 
   const prompt = `당신은 수사관의 조서 작성을 보조하는 AI다.
-아래 진술을 분석하여 반드시 JSON 형식으로만 응답하라. 다른 텍스트 절대 금지.
+아래 진술 전체를 분석하여 반드시 JSON 형식으로만 응답하라. 다른 텍스트 절대 금지. 마크다운 코드블록 사용 금지.
 
-진술 내용:
+전체 진술 내용:
 "${currentText}"
 ${historyStr}
 
-출력 형식:
-{
-  "summary": "조서 기재용 핵심 요약 (3인칭 과거형, ~진술함 형식, 2~3문장)",
-  "questions": ["추가 확인이 필요한 질문 1", "질문 2", "질문 3"],
-  "contradiction": "이전 진술과 모순되는 내용 (없으면 빈 문자열)",
-  "keywords": ["핵심 키워드1", "키워드2", "키워드3"]
-}
+출력 형식 (반드시 이 JSON만 출력):
+{"summary":"조서 기재용 핵심 요약 (3인칭 과거형 ~진술함 형식 2~3문장)","questions":["추가확인 필요한 질문1","질문2","질문3"],"contradiction":"진술 내에서 또는 이전 분석과 논리적으로 충돌하는 내용 구체적으로 서술 없으면 빈문자열","keywords":["핵심키워드1","키워드2","키워드3"]}
 
 규칙:
-1. summary: 감정 호소·중언부언 제거, 사건 관련 사실만
-2. questions: 미확인된 시간·장소·동기·행위 관련 질문 최대 3개
-3. contradiction: 이전 맥락과 논리적으로 충돌하는 내용만, 없으면 반드시 빈 문자열
-4. keywords: 사건 관련 핵심 단어만`;
+1. summary: 감정 호소·중언부언 제거, 사건 관련 사실만, 반드시 작성
+2. questions: 미확인된 시간·장소·동기·행위 관련 질문 정확히 3개
+3. contradiction: 같은 진술 내에서 앞뒤가 맞지 않는 내용, 또는 이전 분석과 다른 내용 구체적으로 명시. 진술 전체를 꼼꼼히 검토하여 모순 찾기. 없으면 빈 문자열
+4. 절대로 \`\`\`json 이나 \`\`\` 사용하지 말 것`;
 
-  const res = await callGemini(prompt, 500);
+  const res = await callGemini(prompt, 1024);
 
   // 로딩 카드 제거
   document.getElementById(loadId)?.remove();
@@ -449,8 +445,7 @@ ${historyStr}
     analysisHistory.push({ summary: parsed.summary, text: currentText });
   }
 
-  // 분석 완료 후 버퍼 비우기 (다음 녹음을 위해)
-  transcriptBuf = [];
+  // 버퍼 유지 - 계속 누적하여 모순 탐지 정확도 향상
 
   const time = new Date().toLocaleTimeString('ko-KR', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
 
@@ -503,7 +498,7 @@ async function callGemini(prompt, maxTokens) {
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-6',
-          max_tokens: maxTokens || 500,
+          max_tokens: maxTokens || 1024,
           messages: [{ role: 'user', content: prompt }]
         })
       });
@@ -554,12 +549,29 @@ function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 function parseJSON(t) {
-  try { return JSON.parse(t.replace(/```json|```/g,'').trim()); }
-  catch(_) {
-    const m = t.match(/\{[\s\S]*\}/);
-    if (m) try { return JSON.parse(m[0]); } catch(_){}
-    return null;
+  if (!t) return null;
+  // 1. 마크다운 코드블록 제거
+  let clean = t.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+  // 2. 직접 파싱 시도
+  try { return JSON.parse(clean); } catch(_) {}
+  // 3. JSON 객체 추출 시도 (앞뒤 불필요한 텍스트 제거)
+  const m = clean.match(/\{[\s\S]*\}/);
+  if (m) {
+    try { return JSON.parse(m[0]); } catch(_) {}
   }
+  // 4. 불완전한 JSON 복구 시도 (응답이 잘린 경우)
+  const start = clean.indexOf('{');
+  if (start >= 0) {
+    let depth = 0, end = -1;
+    for (let i = start; i < clean.length; i++) {
+      if (clean[i] === '{') depth++;
+      else if (clean[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+    }
+    if (end > start) {
+      try { return JSON.parse(clean.slice(start, end+1)); } catch(_) {}
+    }
+  }
+  return null;
 }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
