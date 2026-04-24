@@ -665,8 +665,13 @@ function flush() {
   buf = [];
   const merged = items.map(x => x.text).join(' ');
   const rep = items[items.length - 1];
+
+  // 큐에 이미 대기 중인 항목 전부 제거 (429 방지)
+  // 가장 최근 발화만 처리
+  aiQueue = [];
+
   aiQueue.push({ ids: items.map(x => x.id), text: merged, time: rep.time, ctx: rep.ctx });
-  processQ();
+  if (!aiBusy) processQ();
 }
 
 // ── 녹음 컨트롤 ───────────────────────────────────
@@ -744,6 +749,14 @@ function setAutoSpk(s) {
 // ── AI 큐 ─────────────────────────────────────────
 function processQ() {
   if (aiBusy || !aiQueue.length) return;
+  // 큐에 여러 개면 마지막 것만 처리 (중간 것들은 건너뜀)
+  if (aiQueue.length > 1) {
+    // 중간 항목들의 pending 카드를 fallback으로 처리
+    while (aiQueue.length > 1) {
+      const skip = aiQueue.shift();
+      fallback(skip);
+    }
+  }
   aiBusy = true;
   const item = aiQueue.shift();
   runAI(item).finally(() => { aiBusy = false; processQ(); });
