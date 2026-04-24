@@ -552,6 +552,8 @@ let buf = [], bufTimer = null;
 let seq = 0;
 let transcripts = [], summaries = [];
 let aiQueue = [], aiBusy = false;
+let lastApiCall = 0;
+const API_MIN_INTERVAL = 5000; // 최소 5초 간격
 let ctx = []; // 맥락 큐 최대 6개
 
 const END_RE = /(했어요|했습니다|그랬어요|그랬습니다|맞습니다|아닙니다|없어요|모릅니다|겠습니다|이에요|거예요|입니다|같아요|같습니다)$/;
@@ -748,6 +750,18 @@ function processQ() {
 }
 
 async function runAI(item) {
+  // Q 발화는 AI 요약 생략 (API 절약)
+  if (item.text.length < 8) {
+    fallback(item);
+    return;
+  }
+
+  // API 호출 간격 제한 (429 방지)
+  const now = Date.now();
+  const wait = API_MIN_INTERVAL - (now - lastApiCall);
+  if (wait > 0) await sleep(wait);
+  lastApiCall = Date.now();
+
   const ctxStr = item.ctx.length
     ? item.ctx.map((c,i) => `[${i+1}] ${c.s}: ${c.t}`).join('\n')
     : '(없음)';
@@ -849,7 +863,7 @@ async function callGemini(prompt) {
           generationConfig: { maxOutputTokens: 200, temperature: 0.1 }
         })
       });
-      if (r.status === 429) { await sleep(3000); continue; }
+      if (r.status === 429) { await sleep(8000); lastApiCall = Date.now() + 8000; continue; }
       if (!r.ok) {
         const e = await r.json().catch(()=>({}));
         const msg = e?.error?.message || ('HTTP ' + r.status);
