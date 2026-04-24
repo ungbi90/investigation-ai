@@ -665,6 +665,11 @@ function flush() {
   buf = [];
   const merged = items.map(x => x.text).join(' ');
   const rep = items[items.length - 1];
+  // 짧은 단발 발화(10자 미만)는 AI 호출 건너뜀 - 429 방지
+  if (merged.length < 10) {
+    fallback({ ids: items.map(x => x.id), text: merged, time: rep.time, ctx: rep.ctx });
+    return;
+  }
   aiQueue.push({ ids: items.map(x => x.id), text: merged, time: rep.time, ctx: rep.ctx });
   if (!aiBusy) processQ();
 }
@@ -744,13 +749,17 @@ function setAutoSpk(s) {
 // ── AI 큐 ─────────────────────────────────────────
 function processQ() {
   if (aiBusy || !aiQueue.length) return;
-  // 큐가 밀렸으면 최신 1개만 AI 호출, 나머지는 fallback으로 즉시 화면에 표시
+  // 큐가 밀렸으면 오래된 것은 fallback으로 즉시 처리
   while (aiQueue.length > 1) {
     fallback(aiQueue.shift());
   }
   aiBusy = true;
   const item = aiQueue.shift();
-  runAI(item).finally(() => { aiBusy = false; processQ(); });
+  runAI(item).finally(() => {
+    aiBusy = false;
+    // 4초 간격으로 다음 호출 - 분당 최대 15회 한도 초과 방지
+    setTimeout(processQ, 4000);
+  });
 }
 
 async function runAI(item) {
