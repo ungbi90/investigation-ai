@@ -665,11 +665,6 @@ function flush() {
   buf = [];
   const merged = items.map(x => x.text).join(' ');
   const rep = items[items.length - 1];
-
-  // 큐에 이미 대기 중인 항목 전부 제거 (429 방지)
-  // 가장 최근 발화만 처리
-  aiQueue = [];
-
   aiQueue.push({ ids: items.map(x => x.id), text: merged, time: rep.time, ctx: rep.ctx });
   if (!aiBusy) processQ();
 }
@@ -749,13 +744,9 @@ function setAutoSpk(s) {
 // ── AI 큐 ─────────────────────────────────────────
 function processQ() {
   if (aiBusy || !aiQueue.length) return;
-  // 큐에 여러 개면 마지막 것만 처리 (중간 것들은 건너뜀)
-  if (aiQueue.length > 1) {
-    // 중간 항목들의 pending 카드를 fallback으로 처리
-    while (aiQueue.length > 1) {
-      const skip = aiQueue.shift();
-      fallback(skip);
-    }
+  // 큐가 밀렸으면 최신 1개만 AI 호출, 나머지는 fallback으로 즉시 화면에 표시
+  while (aiQueue.length > 1) {
+    fallback(aiQueue.shift());
   }
   aiBusy = true;
   const item = aiQueue.shift();
@@ -768,12 +759,6 @@ async function runAI(item) {
     fallback(item);
     return;
   }
-
-  // API 호출 간격 제한 (429 방지)
-  const now = Date.now();
-  const wait = API_MIN_INTERVAL - (now - lastApiCall);
-  if (wait > 0) await sleep(wait);
-  lastApiCall = Date.now();
 
   const ctxStr = item.ctx.length
     ? item.ctx.map((c,i) => `[${i+1}] ${c.s}: ${c.t}`).join('\n')
@@ -873,7 +858,7 @@ async function callGemini(prompt) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 200, temperature: 0.1 }
+          generationConfig: { maxOutputTokens: 200, temperature: 0.1, responseMimeType: 'application/json' }
         })
       });
       if (r.status === 429) { await sleep(8000); lastApiCall = Date.now() + 8000; continue; }
