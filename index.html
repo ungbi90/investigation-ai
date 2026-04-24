@@ -655,7 +655,7 @@ function onFinal(text) {
   addPending(id, text, time);
   buf.push({ id, text, time, ctx: [...ctx] });
   clearTimeout(bufTimer);
-  bufTimer = setTimeout(flush, END_RE.test(text) ? 1000 : 4500);
+  bufTimer = setTimeout(flush, END_RE.test(text) ? 1200 : 6000);
 }
 
 function flush() {
@@ -665,8 +665,8 @@ function flush() {
   buf = [];
   const merged = items.map(x => x.text).join(' ');
   const rep = items[items.length - 1];
-  // 짧은 단발 발화(10자 미만)는 AI 호출 건너뜀 - 429 방지
-  if (merged.length < 10) {
+  // 15자 미만 단발 발화는 AI 호출 생략
+  if (merged.length < 15) {
     fallback({ ids: items.map(x => x.id), text: merged, time: rep.time, ctx: rep.ctx });
     return;
   }
