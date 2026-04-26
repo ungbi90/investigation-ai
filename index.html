@@ -160,13 +160,14 @@ html,body{height:100%;overflow:hidden;background:#0a0e14;color:#e8edf5;font-fami
   <!-- CONTROLS -->
   <div id="ctrl">
     <div class="ctrl-row">
-      <button class="btn btn-rec" id="startbtn" onclick="startRec()">● 녹음 시작</button>
-      <button class="btn btn-stop" id="stopbtn" onclick="stopRec()" style="display:none">■ 녹음 중지</button>
-      <button class="btn btn-analyze" id="analyzebtn" onclick="analyze()" disabled>⚡ AI 분석</button>
+      <button class="btn btn-rec" id="startbtn" onclick="startRec()">● 조사 시작</button>
+      <button class="btn btn-stop" id="stopbtn" onclick="stopRec()" style="display:none">■ 중지</button>
+      <button class="btn btn-auto" id="autobtn" onclick="toggleAutoSum()">⚡ 자동요약 OFF</button>
     </div>
     <div class="ctrl-row">
-      <button class="btn btn-export" id="expbtn2" onclick="openExp()" disabled>내보내기</button>
-      <button class="btn btn-ghost" onclick="clearAll()">초기화</button>
+      <button class="btn btn-sum" id="sumbtn" onclick="manualSum()" disabled>📝 요약</button>
+      <button class="btn btn-analyze" id="analyzebtn" onclick="analyze()" disabled>🔍 AI분석</button>
+      <button class="btn btn-export" id="expbtn2" onclick="openExp()" disabled>↑ 내보내기</button>
     </div>
   </div>
 
@@ -241,7 +242,19 @@ let lastTxt = '', lastTxtTime = 0;
 let transcriptBuf = [];   // 현재 녹음 중 쌓이는 전사 버퍼
 let allTranscripts = [];  // 전체 전사 기록
 let analysisHistory = []; // AI 분석 기록 (모순 탐지용 맥락)
-let sessionId = null; // 현재 세션 ID
+let sessionId = null;
+
+// 자동 요약 관련
+let autoSumEnabled = false;      // 자동 요약 ON/OFF
+let autoSumLastTime = 0;         // 마지막 자동 요약 시각
+let autoSumCharCount = 0;        // 마지막 자동 요약 후 누적 글자수
+let autoSumSilenceTimer = null;  // 침묵 감지 타이머
+let lastTranscriptTime = 0;      // 마지막 전사 시각
+const AUTO_MIN_CHARS = 50;       // 최소 글자 수 (스킵 기준)
+const AUTO_TRIGGER_CHARS = 200;  // 자동 실행 누적 글자 기준
+const AUTO_SILENCE_MS = 4000;    // 침묵 감지 시간 (4초)
+const AUTO_COOLDOWN_MS = 180000; // 쿨다운 3분
+const END_RE_AUTO = /(했어요|했습니다|그랬어요|그랬습니다|맞습니다|아닙니다|없어요|모릅니다|겠습니다|이에요|거예요|입니다|같아요|같습니다|네요|데요|고요|군요)$/;
 
 // ── INIT ──────────────────────────────────────────
 window.addEventListener('load', () => {
@@ -346,8 +359,10 @@ function addTranscript(text) {
   document.getElementById('expbtn').disabled = false;
   document.getElementById('expbtn2').disabled = false;
   document.getElementById('analyzebtn').disabled = false;
+  document.getElementById('sumbtn').disabled = false;
   scrollFeed();
   autoSave();
+  triggerAutoSum(text);
 }
 
 // ── 녹음 컨트롤 ───────────────────────────────────
@@ -400,6 +415,12 @@ function clearAll() {
   setApi('idle');
   sessionId = null;
   localStorage.removeItem('joseo_autosave');
+  autoSumEnabled = false;
+  autoSumCharCount = 0;
+  autoSumLastTime = 0;
+  clearTimeout(autoSumSilenceTimer);
+  const ab = document.getElementById('autobtn');
+  if (ab) { ab.textContent = '⚡ 자동요약 OFF'; ab.className = 'btn btn-auto'; }
 }
 
 // ── AI 분석 ───────────────────────────────────────
@@ -628,6 +649,124 @@ function openExp() {
 }
 function closeExp() { document.getElementById('exp-modal').classList.remove('open'); }
 
+// ── 자동 요약 ─────────────────────────────────────
+function toggleAutoSum() {
+  autoSumEnabled = !autoSumEnabled;
+  const btn = document.getElementById('autobtn');
+  if (autoSumEnabled) {
+    btn.textContent = '⚡ 자동요약 ON';
+    btn.className = 'btn btn-auto on';
+    autoSumCharCount = 0;
+    document.getElementById('interim-txt').textContent = '자동 요약 활성화됨';
+  } else {
+    btn.textContent = '⚡ 자동요약 OFF';
+    btn.className = 'btn btn-auto';
+    clearTimeout(autoSumSilenceTimer);
+    document.getElementById('interim-txt').textContent = '자동 요약 비활성화됨';
+  }
+}
+
+function triggerAutoSum(text) {
+  if (!autoSumEnabled) return;
+  lastTranscriptTime = Date.now();
+  autoSumCharCount += text.length;
+
+  // 침묵 감지 타이머 리셋
+  clearTimeout(autoSumSilenceTimer);
+  autoSumSilenceTimer = setTimeout(() => {
+    checkAndRunAutoSum('silence');
+  }, AUTO_SILENCE_MS);
+
+  // 종결 어미 감지 시 즉시 체크
+  if (END_RE_AUTO.test(text.trim())) {
+    clearTimeout(autoSumSilenceTimer);
+    autoSumSilenceTimer = setTimeout(() => {
+      checkAndRunAutoSum('ending');
+    }, 800);
+  }
+}
+
+function checkAndRunAutoSum(trigger) {
+  if (!autoSumEnabled) return;
+
+  // ① 50자 미만 스킵
+  if (autoSumCharCount < AUTO_MIN_CHARS) return;
+
+  // ② 200자 미만이면 침묵 트리거만 허용 (종결어미는 더 기다림)
+  if (autoSumCharCount < AUTO_TRIGGER_CHARS && trigger === 'ending') return;
+
+  // ③ 쿨다운 3분 확인
+  const now = Date.now();
+  if (now - autoSumLastTime < AUTO_COOLDOWN_MS) {
+    const remain = Math.ceil((AUTO_COOLDOWN_MS - (now - autoSumLastTime)) / 1000);
+    document.getElementById('interim-txt').textContent = `자동요약 쿨다운 중 (${remain}초 후 가능)`;
+    return;
+  }
+
+  // 조건 통과 → 자동 요약 실행
+  autoSumLastTime = now;
+  autoSumCharCount = 0;
+  runAutoSum();
+}
+
+async function runAutoSum() {
+  if (allTranscripts.length === 0) return;
+
+  // 가벼운 로딩 표시
+  document.getElementById('interim-txt').textContent = '⚡ 자동 요약 중...';
+
+  const recentText = allTranscripts.slice(-15).map(t => t.text).join(' ');
+  if (recentText.trim().length < AUTO_MIN_CHARS) return;
+
+  const prompt = `당신은 수사관의 조서 작성을 보조하는 AI다.
+아래 진술에서 핵심 사실만 2~3문장으로 요약하라.
+마크다운, 코드블록, 특수기호 사용 금지. 조서 문체(3인칭, 과거형, ~진술함)로만 출력.
+
+진술: "${recentText}"`;
+
+  const res = await callGemini(prompt, 300);
+  document.getElementById('interim-txt').textContent = isRec ? '음성 대기 중...' : '녹음 중지됨';
+
+  if (!res || res.trim().length < 10) return;
+
+  // 자동 요약 카드 추가 (수동과 구분)
+  const time = new Date().toLocaleTimeString('ko-KR', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const d = document.createElement('div');
+  d.className = 'card c-sum';
+  d.innerHTML = `<div class="c-label l-sum">⚡ 자동 요약</div><div class="c-text">${esc(res.trim())}</div><div class="c-time">${time} · 자동</div>`;
+  addToFeed(d);
+  scrollFeed();
+  autoSave();
+}
+
+// 수동 요약 (기존 analyze에서 요약만 분리)
+async function manualSum() {
+  if (allTranscripts.length === 0) { alert('요약할 진술 내용이 없습니다.'); return; }
+  const btn = document.getElementById('sumbtn');
+  btn.disabled = true; btn.textContent = '요약 중...';
+
+  const recentText = allTranscripts.slice(-20).map(t => t.text).join(' ');
+  const prompt = `당신은 수사관의 조서 작성을 보조하는 AI다.
+아래 진술 전체에서 핵심 사실만 3~5문장으로 요약하라.
+마크다운, 코드블록, 특수기호 사용 금지. 조서 문체(3인칭, 과거형, ~진술함)로만 출력.
+
+진술: "${recentText}"`;
+
+  const res = await callGemini(prompt, 500);
+  btn.disabled = false; btn.textContent = '📝 요약';
+  if (!res) return;
+
+  const time = new Date().toLocaleTimeString('ko-KR', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const d = document.createElement('div');
+  d.className = 'card c-sum';
+  d.innerHTML = `<div class="c-label l-sum">📝 수동 요약</div><div class="c-text">${esc(res.trim())}</div><div class="c-time">${time}</div>`;
+  addToFeed(d);
+  scrollFeed();
+  if (analysisHistory) analysisHistory.push({ summary: res.trim(), text: recentText });
+  autoSave();
+}
+
+
 // ── 자동저장 / 불러오기 ──────────────────────────────
 const AUTOSAVE_KEY = 'joseo_autosave';
 const SESSIONS_KEY = 'joseo_sessions';
@@ -672,6 +811,7 @@ function autoRestore() {
     document.getElementById('expbtn').disabled = false;
     document.getElementById('expbtn2').disabled = false;
     document.getElementById('analyzebtn').disabled = false;
+  document.getElementById('sumbtn').disabled = false;
     scrollFeed();
   } catch(e) {
     console.warn('자동복원 실패:', e);
@@ -757,6 +897,7 @@ function loadSession(id) {
   document.getElementById('expbtn').disabled = false;
   document.getElementById('expbtn2').disabled = false;
   document.getElementById('analyzebtn').disabled = false;
+  document.getElementById('sumbtn').disabled = false;
   scrollFeed();
   closeSaveList();
   alert('불러오기 완료!');
